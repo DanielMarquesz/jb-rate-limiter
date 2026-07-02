@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InvalidUserIdError, RateLimiter } from "../src/rateLimiter.js";
+import { InvalidTimestampError, InvalidUserIdError, RateLimiter } from "../src/rateLimiter.js";
 
 describe("RateLimiter — spec example (limit 3 req / 60s)", () => {
   // The spec's example uses seconds (e.g. t=10, t=70). Our limiter takes
@@ -79,6 +79,32 @@ describe("RateLimiter — userId handling", () => {
 
     expect(() => limiter.allow(null, 0)).toThrow(InvalidUserIdError);
     expect(() => limiter.allow(undefined, 0)).toThrow(InvalidUserIdError);
+  });
+});
+
+describe("RateLimiter — invalid timestamp", () => {
+  it("throws InvalidTimestampError for NaN, Infinity, and -Infinity, rather than returning false", () => {
+    const limiter = new RateLimiter();
+
+    expect(() => limiter.allow("bob", NaN)).toThrow(InvalidTimestampError);
+    expect(() => limiter.allow("bob", Infinity)).toThrow(InvalidTimestampError);
+    expect(() => limiter.allow("bob", -Infinity)).toThrow(InvalidTimestampError);
+  });
+
+  it("does not reset a user's history when a rejected NaN call is attempted", () => {
+    const limiter = new RateLimiter(3, 60_000);
+
+    expect(limiter.allow("bob", 0)).toBe(true);
+    expect(limiter.allow("bob", 0)).toBe(true);
+    expect(limiter.allow("bob", 0)).toBe(true);
+    expect(limiter.allow("bob", 0)).toBe(false); // limit reached
+
+    // Without validation, `cutoff = NaN` would make every `t >= cutoff`
+    // comparison false, wiping bob's history and resetting the limit.
+    expect(() => limiter.allow("bob", NaN)).toThrow(InvalidTimestampError);
+
+    // History must be untouched: still over the limit.
+    expect(limiter.allow("bob", 0)).toBe(false);
   });
 });
 

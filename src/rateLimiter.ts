@@ -13,6 +13,13 @@ export class InvalidUserIdError extends Error {
   }
 }
 
+export class InvalidTimestampError extends Error {
+  constructor(message = "timestamp must be a finite number") {
+    super(message);
+    this.name = "InvalidTimestampError";
+  }
+}
+
 export class RateLimiter {
   private readonly limit: number;
   private readonly windowMs: number;
@@ -32,6 +39,10 @@ export class RateLimiter {
   allow(userId: string | null | undefined, timestamp: number): boolean {
     if (userId === null || userId === undefined) {
       throw new InvalidUserIdError();
+    }
+
+    if (!Number.isFinite(timestamp)) {
+      throw new InvalidTimestampError();
     }
 
     const isGlobal = userId === "";

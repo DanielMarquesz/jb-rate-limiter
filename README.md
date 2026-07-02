@@ -146,6 +146,16 @@ What I'd change for a long-running production deployment:
   dedicated `InvalidUserIdError extends Error` class rather than a generic
   `Error` or a sentinel return value, so callers can `instanceof`-check it
   distinctly from other failures.
+- **Non-finite `timestamp` (`NaN`/`Infinity`/`-Infinity`):** not mentioned by
+  the spec, but a `NaN` timestamp makes `cutoff = timestamp - windowMs` also
+  `NaN`, and every `t >= NaN` comparison is `false` — silently wiping a
+  user's entire history instead of just the stale portion, which resets
+  their rate limit. `Infinity` has a milder but still real effect: an
+  accepted entry that satisfies `t >= cutoff` forever but never
+  `t <= timestamp` for any later finite call, permanently occupying a slot.
+  Both are addressed the same way as invalid `userId` — reject with a
+  dedicated `InvalidTimestampError` rather than silently corrupting state or
+  returning `false`.
 - **Non-string / malformed `userId`** (e.g. a number, an object, or a
   whitespace-only string like `" "`): the spec only calls out non-empty
   string, empty string, and null/missing. I treat anything that is neither
