@@ -24,10 +24,10 @@ limiter.allow("alice", Date.now()); // -> true / false
 ## Timestamp unit
 
 **Milliseconds.** The default window is `60_000`. The spec allowed either
-seconds or milliseconds; milliseconds were chosen because it matches
-`Date.now()` and gives finer-grained boundary behavior. The class itself is
-actually unit-agnostic — it just needs `windowMs` expressed in the same unit
-as the timestamps you pass in — but the default and all "real" usage assumes
+seconds or milliseconds; milliseconds were chosen because they match
+`Date.now()` and give finer-grained boundary behavior. The class itself is
+unit-agnostic — `windowMs` just needs to be expressed in the same unit as
+the timestamps you pass in — but the default and all "real" usage assume
 milliseconds.
 
 ## Data structure, and why
@@ -52,18 +52,19 @@ On every `allow(userId, timestamp)` call:
    the rejected timestamp is not stored).
 
 **Why a plain array instead of a queue/deque or a sorted/tree structure:**
-because the limit is small and fixed (100), each bucket's array almost never
-holds more than ~100 entries in normal (roughly time-ordered) usage, so a
-linear filter/scan per call is trivial (worst case ~200 comparisons). A
-FIFO/deque with "pop from the front while stale" would be marginally cheaper,
-but it silently assumes timestamps arrive in non-decreasing order — which the
-spec explicitly says is not guaranteed (see the `allow("alice", 65)` example
-after `allow("alice", 71)`). Using a full filter instead of front-only
-popping means the limiter stays correct even when a call's timestamp is
-older than one that was already accepted. If the limit were much larger (say,
-tens of thousands), this would be worth revisiting — a sorted structure with
-binary search, or a fixed-size ring buffer, would turn the O(n) filter into
-O(log n) or O(1) amortized.
+
+- The limit is small and fixed (100), so each bucket's array almost never
+  holds more than ~100 entries in normal (roughly time-ordered) usage — a
+  linear filter/scan per call is trivial (worst case ~200 comparisons).
+- A FIFO/deque with "pop from the front while stale" would be marginally
+  cheaper, but it silently assumes timestamps arrive in non-decreasing
+  order — which the spec explicitly says is *not* guaranteed (see the
+  `allow("alice", 65)` example after `allow("alice", 71)`). A full filter
+  instead of front-only popping keeps the limiter correct even when a call's
+  timestamp is older than one that was already accepted.
+- If the limit were much larger (say, tens of thousands), this would be
+  worth revisiting — a sorted structure with binary search, or a fixed-size
+  ring buffer, would turn the O(n) filter into O(log n) or O(1) amortized.
 
 **Concurrency:** Node.js runs this synchronously on a single thread, so
 "correct for many users at the same time" is satisfied by each bucket having
@@ -94,13 +95,11 @@ behind, is not.
 
 What I'd change for a long-running production deployment:
 
-- **Evict empty buckets on access**: after step 1's filter, if the resulting
-  array is empty *and* the request was rejected... actually more precisely:
-  after step 3, if a user's array is empty, delete the map key instead of
-  storing an empty array. This bounds the map to users with at least one
-  timestamp still in-window, which self-heals but still leaves one stale
-  entry per lapsed user until their next call (or never, if they don't come
-  back — see next point).
+- **Evict empty buckets on access**: after step 3, if a user's array ends up
+  empty, delete the map key instead of storing an empty array. This bounds
+  the map to users with at least one timestamp still in-window. It
+  self-heals, but still leaves one stale entry per lapsed user until their
+  next call (or forever, if they never come back — see next point).
 - **Bound total memory with an LRU cache** (e.g. cap `userHistories` at some
   max key count, evicting least-recently-used keys) so worst-case memory is
   a hard ceiling regardless of how many distinct users have ever connected.
@@ -123,18 +122,20 @@ What I'd change for a long-running production deployment:
   `allow("alice", 71)`): the spec deliberately doesn't say what should
   happen, just that it should be "deliberate." I chose to evaluate every
   call strictly against its *own* `[timestamp - windowMs, timestamp]` window,
-  using whatever history remains at that moment — i.e. I do **not** try to
-  "revive" entries that an earlier (chronologically later) call already
-  evicted for being outside *its* window. This is the simplest, most literal
-  reading of "sliding window relative to the given timestamp," and it keeps
-  memory bounded by always pruning strictly-older entries rather than
-  keeping full unbounded history "just in case" an even-earlier call shows
-  up later. The tradeoff: a pathological interleaving of far-future and
-  far-past out-of-order calls could, in theory, undercount slightly relative
-  to "true" full-history semantics (since some entries were pruned before a
-  later-arriving-but-earlier-timestamped call could see them). For realistic
-  usage (timestamps that are occasionally-but-not-wildly out of order, e.g.
-  due to clock skew or reordered network delivery), this doesn't come up.
+  using whatever history remains at that moment. In other words, I do
+  **not** try to "revive" entries that an earlier (chronologically later)
+  call already evicted for being outside *its* window. This is the
+  simplest, most literal reading of "sliding window relative to the given
+  timestamp," and it keeps memory bounded by always pruning strictly-older
+  entries rather than keeping full unbounded history "just in case" an
+  even-earlier call shows up later.
+
+  The tradeoff: a pathological interleaving of far-future and far-past
+  out-of-order calls could, in theory, undercount slightly relative to
+  "true" full-history semantics, since some entries get pruned before a
+  later-arriving-but-earlier-timestamped call could see them. For realistic
+  usage — timestamps only occasionally out of order, e.g. due to clock skew
+  or reordered network delivery — this doesn't come up.
 - **Window boundary inclusivity:** the spec's own example implies both ends
   of the `[timestamp - 60, timestamp]` window are inclusive — at limit 3,
   `allow("alice", 10)`, `allow("alice", 10)`, `allow("alice", 70)` are all
@@ -147,13 +148,16 @@ What I'd change for a long-running production deployment:
   `Error` or a sentinel return value, so callers can `instanceof`-check it
   distinctly from other failures.
 - **Non-finite `timestamp` (`NaN`/`Infinity`/`-Infinity`):** not mentioned by
-  the spec, but a `NaN` timestamp makes `cutoff = timestamp - windowMs` also
-  `NaN`, and every `t >= NaN` comparison is `false` — silently wiping a
-  user's entire history instead of just the stale portion, which resets
-  their rate limit. `Infinity` has a milder but still real effect: an
-  accepted entry that satisfies `t >= cutoff` forever but never
-  `t <= timestamp` for any later finite call, permanently occupying a slot.
-  Both are addressed the same way as invalid `userId` — reject with a
+  the spec, but these break the arithmetic in ways worth guarding against:
+  - `NaN` makes `cutoff = timestamp - windowMs` also `NaN`, and every
+    `t >= NaN` comparison is `false` — silently wiping a user's entire
+    history instead of just the stale portion, which resets their rate
+    limit.
+  - `Infinity` is milder but still real: it gets accepted as an entry that
+    satisfies `t >= cutoff` forever but never `t <= timestamp` for any
+    later finite call, permanently occupying a slot.
+
+  Both are handled the same way as an invalid `userId` — reject with a
   dedicated `InvalidTimestampError` rather than silently corrupting state or
   returning `false`.
 - **Non-string / malformed `userId`** (e.g. a number, an object, or a
