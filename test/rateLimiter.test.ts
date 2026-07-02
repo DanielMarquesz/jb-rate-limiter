@@ -9,23 +9,17 @@ describe("RateLimiter — spec example (limit 3 req / 60s)", () => {
   it("reproduces every line of the spec transcript", () => {
     const limiter = new RateLimiter(3, 60 * SEC);
 
-    expect(limiter.allow("alice", 10 * SEC)).toBe(true); // 1st
-    expect(limiter.allow("alice", 10 * SEC)).toBe(true); // 2nd
-    expect(limiter.allow("alice", 70 * SEC)).toBe(true); // 3rd
-    expect(limiter.allow("alice", 70 * SEC)).toBe(false); // 4th rejected
-
-    // Window has slid past t=10, freeing room.
+    expect(limiter.allow("alice", 10 * SEC)).toBe(true);
+    expect(limiter.allow("alice", 10 * SEC)).toBe(true);
+    expect(limiter.allow("alice", 70 * SEC)).toBe(true);
+    expect(limiter.allow("alice", 70 * SEC)).toBe(false);
     expect(limiter.allow("alice", 71 * SEC)).toBe(true);
 
-    // Out-of-order: ts=65 is earlier than the previous call (71). Per our
-    // documented "as-is" semantics, we count history within [65-60, 65]=[5,65]
-    // using whatever survived prior evictions. At this point alice's stored
-    // history is [70, 71] (the t=10 entries were evicted by the ts=71 call),
-    // neither of which is <= 65, so the count in this call's window is 0 and
-    // the request is accepted.
+    // Out-of-order call (65 < 71): by this point the t=10 entries were
+    // already evicted by the ts=71 call and aren't revived, so this is
+    // evaluated against alice's stored [70, 71], neither <= 65.
     expect(limiter.allow("alice", 65 * SEC)).toBe(true);
 
-    // "" is a separate, shared global counter — independent of alice's count.
     expect(limiter.allow("", 70 * SEC)).toBe(true);
   });
 });
@@ -37,7 +31,6 @@ describe("RateLimiter — default limit (100 req / 60s window)", () => {
     for (let i = 0; i < 100; i++) {
       expect(limiter.allow("bob", 1_000 + i)).toBe(true);
     }
-    // A timestamp at or after all 100 prior ones sees the full count and is rejected.
     expect(limiter.allow("bob", 1_100)).toBe(false);
   });
 
@@ -45,10 +38,8 @@ describe("RateLimiter — default limit (100 req / 60s window)", () => {
     const limiter = new RateLimiter(1, 60_000);
 
     expect(limiter.allow("carol", 0)).toBe(true);
-    // Exactly 60_000ms later — still within [ts-60000, ts], so still counted
-    // and thus rejected (limit is 1).
+    // Exactly 60_000ms later is still within the inclusive window.
     expect(limiter.allow("carol", 60_000)).toBe(false);
-    // One ms further and the first entry (t=0) falls outside the window.
     expect(limiter.allow("carol", 60_001)).toBe(true);
   });
 });
@@ -59,7 +50,6 @@ describe("RateLimiter — userId handling", () => {
 
     expect(limiter.allow("dave", 0)).toBe(true);
     expect(limiter.allow("dave", 0)).toBe(false);
-    // A different user is unaffected by dave's usage.
     expect(limiter.allow("erin", 0)).toBe(true);
   });
 
@@ -68,9 +58,7 @@ describe("RateLimiter — userId handling", () => {
 
     expect(limiter.allow("frank", 0)).toBe(true);
     expect(limiter.allow("", 0)).toBe(true);
-    // frank's own limit is already spent, but that must not affect "".
     expect(limiter.allow("frank", 0)).toBe(false);
-    // and a second global call is now rejected on its own terms.
     expect(limiter.allow("", 0)).toBe(false);
   });
 
@@ -97,13 +85,12 @@ describe("RateLimiter — invalid timestamp", () => {
     expect(limiter.allow("bob", 0)).toBe(true);
     expect(limiter.allow("bob", 0)).toBe(true);
     expect(limiter.allow("bob", 0)).toBe(true);
-    expect(limiter.allow("bob", 0)).toBe(false); // limit reached
+    expect(limiter.allow("bob", 0)).toBe(false);
 
-    // Without validation, `cutoff = NaN` would make every `t >= cutoff`
+    // Without validation, cutoff = NaN would make every `t >= cutoff`
     // comparison false, wiping bob's history and resetting the limit.
     expect(() => limiter.allow("bob", NaN)).toThrow(InvalidTimestampError);
 
-    // History must be untouched: still over the limit.
     expect(limiter.allow("bob", 0)).toBe(false);
   });
 });

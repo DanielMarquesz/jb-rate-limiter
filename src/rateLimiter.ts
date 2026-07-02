@@ -1,10 +1,5 @@
-/**
- * Sliding-window rate limiter with per-user history.
- *
- * Timestamps are plain numbers in milliseconds, supplied entirely by the
- * caller — the limiter never reads the system clock, so behavior is fully
- * deterministic and testable.
- */
+// Timestamps are plain numbers in milliseconds, supplied entirely by the
+// caller — never read from the system clock — so behavior is deterministic.
 
 export class InvalidUserIdError extends Error {
   constructor(message = "userId must not be null or undefined") {
@@ -24,11 +19,10 @@ export class RateLimiter {
   private readonly limit: number;
   private readonly windowMs: number;
 
-  /** Per-user accepted-timestamp history. */
   private readonly userHistories = new Map<string, number[]>();
 
-  /** Shared history for the "" (global) bucket, kept separate from
-   * userHistories so a real userId can never collide with the global key. */
+  // Kept as its own field rather than a userHistories entry so a real
+  // userId can never collide with the global key.
   private globalHistory: number[] = [];
 
   constructor(limit = 100, windowMs = 60_000) {
@@ -50,14 +44,12 @@ export class RateLimiter {
 
     const cutoff = timestamp - this.windowMs;
 
-    // Permanently drop entries below this call's own window — see README
-    // "Out-of-order timestamps" for why we don't try to revive entries a
-    // prior (later) call already evicted.
+    // Evaluated against this call's own window; entries a prior (later-
+    // timestamped) call already evicted are not revived. See README.
     const fresh = history.filter((t) => t >= cutoff);
 
-    // Entries kept above may still be > timestamp (future-dated relative to
-    // this out-of-order call); those don't count toward *this* call but stay
-    // stored for later calls.
+    // fresh may still hold entries > timestamp for out-of-order calls;
+    // those don't count here but stay stored for later calls.
     const countInWindow = fresh.filter((t) => t <= timestamp).length;
     const accepted = countInWindow < this.limit;
 
